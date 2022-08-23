@@ -34,8 +34,7 @@ def generate_json(folder_path, split):
         utt_id = content.split(", wav: ")[1].split("}")[0]
         output_json[utt_id] = dict()
         output_json[utt_id]["path"] = (
-            "data_proc/"
-            + folder_path.replace("/txt", "/wav")
+            folder_path.replace("/txt", "/wav")
             + "/"
             + utt_id
             + ".wav"
