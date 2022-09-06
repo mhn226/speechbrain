@@ -12,7 +12,7 @@
 seed: 7778
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 debug: False
-output_folder: !ref output/<seed>
+output_folder: !ref output/<seed>_tokfast
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 wer_file: !ref <output_folder>/wer.txt
@@ -22,8 +22,8 @@ wer_file: !ref <output_folder>/wer.txt
 data_folder: /gpfsscratch/rech/nsm/ueb56uf/corpora/common_voice/cv-corpus-7.0-2021-07-21/fr/save 
 #tokenizer_file: /gpfsscratch/rech/nsm/ueb56uf/corpora/IWSLT2022_Tamasheq_data/taq_fra_clean/train/spm_unigram1000.model
 #tokenizer_file: mbart-large-50/sentencepiece.bpe.model 
-tokenizer_file: mbart-large-50-many-to-many-mmt/sentencepiece.bpe.model
-pretrain_path: output/5988/save/wav2vec2_checkpoint/
+#tokenizer_file: mbart-large-50-many-to-many-mmt/sentencepiece.bpe.model
+wav2vec2_path: wav2vec2  #output/5988/save/wav2vec2_checkpoint/
 lang: "fr" #for the BLEU score detokenization
 target_lang: "fr_XX" # for mbart initialization
 sample_rate: 16000
@@ -39,7 +39,7 @@ tokenizer: !new:sentencepiece.SentencePieceProcessor
 
 # URL for the HuggingFace model we want to load (BASE here)
 #wav2vec2_hub: LIA-AvignonUniversity/IWSLT2022-tamasheq-only
-wav2vec2_hub: output/5988/save/wav2vec2_checkpoint
+wav2vec2_hub: wav2vec2 #output/5988/save/wav2vec2_checkpoint
 
 
 # wav2vec 2.0 specific parameters
@@ -50,6 +50,7 @@ keep_n_layers: 6 # keep first N layers from the Transformer Encoder stack inside
 number_of_epochs: 100
 lr: 0.001
 lr_wav2vec: 0.00001
+lr_mbart: 0.00001
 sorting: ascending
 batch_size: 8 #4
 test_batch_size: 4 #4
@@ -88,8 +89,8 @@ attention_type: "regularMHA" # "RelPosMHAXL" or "regularMHA"
 # Outputs
 blank_index: 0
 label_smoothing: 0.1
-pad_index: 0
-bos_index: 1
+pad_index: 1      # pad_index defined by mbart model
+bos_index: 250008 # fr_XX bos_index defined by mbart model
 eos_index: 2
 
 # Decoding parameters
@@ -139,7 +140,7 @@ mBART: !new:speechbrain.lobes.models.huggingface_mbart.HuggingFaceMBART
     #input_size: !ref <embedding_size>
     #tgt_vocab: !ref <output_neurons>
     source: !ref <mbart_path>
-    output_norm: False
+    #output_norm: False
     freeze: !ref <mbart_frozen>
     save_path: !ref <save_folder>/mbart_checkpoint
     target_lang: !ref <target_lang>
@@ -164,20 +165,21 @@ length_adapter: !new:speechbrain.lobes.models.Adapters.LengthAdapter
     n_layers: 3
     kernel_size: 3
     stride: 2
-    norm: True
+    norm: False #True
     
 
 modules:
     wav2vec2: !ref <wav2vec2>
     enc: !ref <enc>
-    dec: !ref <mBART>
+    mBART: !ref <mBART>
     #Transformer: !ref <Transformer>
-    seq_lin: !ref <seq_lin>
+    #seq_lin: !ref <seq_lin>
     adapter: !ref <adapter>
     length_adapter: !ref <length_adapter>
 
 model: !new:torch.nn.ModuleList
-    - [!ref <enc>, !ref <adapter>, !ref <length_adapter>, !ref <mBART>, !ref <seq_lin>]
+    #- [!ref <enc>, !ref <adapter>, !ref <length_adapter>, !ref <mBART>, !ref <seq_lin>]
+    - [!ref <enc>, !ref <adapter>, !ref <length_adapter>]
     #- [!ref <enc>, !ref <Transformer>, !ref <seq_lin>]
 
 adam_opt_class: !name:torch.optim.Adam
@@ -185,6 +187,9 @@ adam_opt_class: !name:torch.optim.Adam
 
 wav2vec_opt_class: !name:torch.optim.Adam
     lr: !ref <lr_wav2vec>
+
+mbart_opt_class: !name:torch.optim.Adam
+    lr: !ref <lr_mbart>
 
 seq_cost: !name:speechbrain.nnet.losses.nll_loss
     label_smoothing: !ref <label_smoothing>
@@ -201,13 +206,20 @@ lr_annealing_wav2vec: !new:speechbrain.nnet.schedulers.NewBobScheduler
     improvement_threshold: 0.0025
     annealing_factor: 0.9
 
+lr_annealing_mbart: !new:speechbrain.nnet.schedulers.NewBobScheduler
+    initial_value: !ref <lr_mbart>
+    improvement_threshold: 0.0025
+    annealing_factor: 0.9
+
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
         model: !ref <model>
         wav2vec2: !ref <wav2vec2>
+        mBART: !ref <mBART>
         lr_annealing_adam: !ref <lr_annealing_adam>
         lr_annealing_wav2vec: !ref <lr_annealing_wav2vec>
+        lr_annealing_mbart: !ref <lr_annealing_mbart>
         counter: !ref <epoch_counter>
 
 train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
@@ -246,9 +258,11 @@ acc_computer: !name:speechbrain.utils.Accuracy.AccuracyStats
 
 pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
     collect_in: !ref <save_folder>
-    loadables:
-        tokenizer: !ref <tokenizer>
-        wav2vec2: !ref <wav2vec2>
-    paths:
-        tokenizer: !ref <tokenizer_file>
-        wav2vec2: !ref <pretrain_path>/wav2vec2.ckpt
+#    loadables:
+#        tokenizer: !ref <tokenizer>
+#        wav2vec2: !ref <wav2vec2>
+#        mBART: !ref <mBART>
+#    paths:
+#        tokenizer: !ref <tokenizer_file>
+#        wav2vec2: !ref <wav2vec2_path>
+#        mBART: !ref <mbart_path>

@@ -61,7 +61,6 @@ class ST(sb.core.Brain):
         loss = self.hparams.seq_cost(p_seq, tokens_eos, length=tokens_eos_lens,)
 
         fr_detokenizer = MosesDetokenizer(lang=self.hparams.lang)
-
         if stage != sb.Stage.TRAIN:
             predictions = [
                 fr_detokenizer.detokenize(
@@ -76,6 +75,10 @@ class ST(sb.core.Brain):
             ]
             # it needs to be a list of list due to the extend on the bleu implementation
             targets = [detokenized_translation]
+
+            logger.info(hyps)
+            logger.info(predictions)
+            logger.info(targets)
 
             self.bleu_metric.append(ids, predictions, targets)
 
@@ -289,9 +292,11 @@ def dataio_prepare(hparams):
             )
         else:
             datasets["train"] = datasets["train"].filtered_sorted(
+                key_max_value={"duration": 30},
                 sort_key="duration"
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
+                key_max_value={"duration": 30},
                 sort_key="duration"
             )
 
@@ -314,9 +319,11 @@ def dataio_prepare(hparams):
             )
         else:
             datasets["train"] = datasets["train"].filtered_sorted(
+                key_max_value={"duration": 30},
                 sort_key="duration", reverse=True
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
+                key_max_value={"duration": 30},
                 sort_key="duration", reverse=True
             )
 
@@ -381,7 +388,7 @@ if __name__ == "__main__":
         : hparams["keep_n_layers"]
     ]
 
-    print(st_brain.modules)
+    #print(st_brain.modules)
 
     # Training
     st_brain.fit(

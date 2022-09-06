@@ -92,6 +92,8 @@ class SerialAdapter(nn.Module):
             Input tensor.
         """
 
+        residual = x
+
         #if self.proj:
         if hasattr(self, 'proj'):
             x = self.proj(x)
@@ -102,7 +104,7 @@ class SerialAdapter(nn.Module):
         out = self.activation_fuction(out)
         out = self.linear2(out)
         # residual connection
-        out += x
+        out += residual
         
         return out
 

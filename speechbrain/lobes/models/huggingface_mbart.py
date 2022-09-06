@@ -39,7 +39,7 @@ try:
     import transformers
     from transformers import MBartModel, MBartConfig
     from transformers import MBartForConditionalGeneration, MBartTokenizer
-    from transformers import MBart50TokenizerFast
+    from transformers import MBart50TokenizerFast, MBart50Tokenizer
     from transformers.modeling_outputs import BaseModelOutput
 except ImportError:
     MSG = "Please install transformers from HuggingFace to use wav2vec2 / Hubert\n"
@@ -97,7 +97,7 @@ class HuggingFaceMBART(nn.Module):
         self,
         source,
         save_path,
-        output_norm=True,
+        #output_norm=True,
         freeze=True,
         target_lang="fr_XX",
     ):
@@ -141,7 +141,7 @@ class HuggingFaceMBART(nn.Module):
             source, config=config, model=model, save_path=save_path
         )
         self.freeze = freeze
-        self.output_norm = output_norm
+        #self.output_norm = output_norm
         if self.freeze:
             logger.warning(
                 "speechbrain.lobes.models.huggingface_mbart - mbart is frozen."
@@ -171,15 +171,15 @@ class HuggingFaceMBART(nn.Module):
             # We transfer the parameters from the checkpoint.
             self._load_sb_pretrained_mbart_parameters(ckpt_full_path)
         else:
-            self.tokenizer = MBart50TokenizerFast.from_pretrained("mbart-large-50/", src_lang="en_XX", tgt_lang=self.target_lang)
+            #self.tokenizer = MBart50TokenizerFast.from_pretrained("mbart-large-50/", tgt_lang=self.target_lang)
+            self.tokenizer = MBart50Tokenizer.from_pretrained("mbart-large-50/", tgt_lang=self.target_lang)
             #self.model = model.from_pretrained(source, cache_dir=save_path).get_decoder()
             self.model = model.from_pretrained(source, cache_dir=save_path)
             self.model.model.encoder = nn.Identity()
             #self.model.encoder = nn.Identity()
-            print(self.model)
             
             self.model.config.forced_eos_token_id = self.tokenizer.lang_code_to_id[self.target_lang]
-            self.model.config.decoder_start_token_id = self.tokenizer.lang_code_to_id[self.target_lang]
+            #self.model.config.decoder_start_token_id = self.tokenizer.lang_code_to_id[self.target_lang]
             # Remove embed layers
             #self.model.embed_tokens = nn.Identity()
             #self.model.embed_positions = nn.Identity()
@@ -299,6 +299,22 @@ class HuggingFaceMBART(nn.Module):
             The index for <pad> token (default=0).
         """
         # Transform encoder's output to the right format of the MBartModel
+        
+        # should we replace 0 elements by pax_idx as pad_idx of mbart model seems to be different from 0?
+        tgt = self.custom_padding(tgt, 0, pad_idx)
+
+        #(
+        #    src_key_padding_mask,
+        #    tgt_key_padding_mask,
+        #    src_mask,
+        #    tgt_mask,
+        #) = self.make_masks_for_mt(src, tgt, pad_idx=pad_idx)
+        #print(tgt)
+        #print(self.model.config.pad_token_id, self.model.config.eos_token_id, pad_idx, self.model.config.decoder_start_token_id)
+        #print(src_mask, src_key_padding_mask)
+        #print(tgt_mask, tgt_key_padding_mask)
+
+        
         src = BaseModelOutput(last_hidden_state=src)
 
         if self.freeze:
@@ -338,22 +354,24 @@ class HuggingFaceMBART(nn.Module):
 
         encoder_out = BaseModelOutput(last_hidden_state=encoder_out)
 
-        #self.tokenizer = MBart50TokenizerFast.from_pretrained("mbart-large-50/", src_lang="en_XX", tgt_lang="fr_XX")
 
         dec_out = self.model.generate(
             #inputs=encoder_out,
             encoder_outputs=encoder_out,
             forced_bos_token_id=self.tokenizer.lang_code_to_id[self.target_lang],
-            decoder_start_token_id=self.tokenizer.lang_code_to_id[self.target_lang],
             min_length=min_len,
             max_length=max_len,
             num_beams=beam_size,
-            eos_token_id=eos_token_id,
+            #eos_token_id=eos_token_id,
         )
         
         return dec_out
 
+    def custom_padding(self, x, org_pad, custom_pad):
+        out = x.clone()
+        out[x==org_pad] = custom_pad
 
+        return out
 
     def make_masks_for_mt(self, src, tgt, pad_idx=0):
         """This method generates the masks for training the transformer model.
@@ -380,116 +398,3 @@ class HuggingFaceMBART(nn.Module):
 
 
 
-class HuggingFaceMBARTPretrain(nn.Module):
-    """This lobe enables the integration of HuggingFace
-     wav2vec2.0 models to be pretrained.
-
-    Source paper: https://arxiv.org/abs/2006.11477
-    Transformer from HuggingFace needs to be installed:
-    https://huggingface.co/transformers/installation.html
-
-    The return is an HuggingFace format and the mask indices that contains:
-    https://huggingface.co/transformers/model_doc/wav2vec2.html#wav2vec2forpretraining
-
-    For instance, it returns the loss that can be accessed with .loss
-
-    Arguments
-    ---------
-    source : str
-        HuggingFace hub name: e.g "facebook/wav2vec2-large-lv60"
-    save_path : str
-        Path (dir) of the downloaded model.
-    mask_prob : float (default: 0.65)
-        Probability of masking a given frame. Default is taken from the paper.
-    mask_length : float (default: 10)
-        Length (i.e. number of consecutive masked frames). Default is taken from
-        the paper.
-    Example
-    -------
-    >>> inputs = torch.rand([10, 32000])
-    >>> model_hub = "facebook/wav2vec2-base-960h"
-    >>> save_path = "savedir"
-    >>> model = HuggingFaceWav2Vec2Pretrain(model_hub, save_path)
-    >>> outputs, _ = model(inputs)
-    """
-
-    def __init__(
-        self,
-        source,
-        save_path,
-        mask_prob=0.65,
-        mask_length=10,
-        normalize_wav=True,
-    ):
-        super().__init__()
-
-        self.mask_prob = mask_prob
-        self.mask_length = mask_length
-        self.normalize_wav = normalize_wav
-
-        # Download the config of the model from HuggingFace.
-        self.config = Wav2Vec2Config.from_pretrained(
-            source, cache_dir=save_path
-        )
-        self.config.output_hidden_states = (
-            True  # We want the hidden states as well!
-        )
-
-        self.model = Wav2Vec2ForPreTraining(self.config)
-        self.model.gradient_checkpointing_disable()  # Required by DDP
-        self.model.train()
-
-        # We check if inputs need to be normalized w.r.t pretrained wav2vec2
-
-    def forward(self, wav):
-        """Takes an input waveform and return its corresponding wav2vec encoding.
-
-        Arguments
-        ---------
-        wav : torch.Tensor (signal)
-            A batch of audio signals to transform to features.
-        """
-        batch_size, raw_sequence_length = wav.shape
-
-        if self.normalize_wav:
-            wav = F.layer_norm(wav, wav.shape)
-
-        sequence_length = self.model._get_feat_extract_output_lengths(
-            raw_sequence_length
-        )
-
-        # 1. Compute the indices that will be masked
-        mask_time_indices = _compute_mask_indices(
-            (batch_size, sequence_length),
-            mask_prob=self.mask_prob,
-            mask_length=self.mask_length,
-        )
-        torch_mask_time_indices = torch.tensor(
-            mask_time_indices, device=wav.device, dtype=torch.long,
-        )
-
-        # 2. Sample the negative samples from the entire sequence.
-        # Fairseq does it only on the masked indices, but this only work if you
-        # have long sentences. For more versatily, we sample on the entire sequence.
-        # value.
-        full_sentence_indices = np.ones((batch_size, sequence_length))
-
-        # print(np.sum(mask_time_indices, axis=1))
-        negative_sample_indices = torch.tensor(
-            transformers.models.wav2vec2.modeling_wav2vec2._sample_negative_indices(
-                (batch_size, sequence_length),
-                num_negatives=self.config.num_negatives,
-                mask_time_indices=full_sentence_indices,
-            ),
-            device=wav.device,
-            dtype=torch.long,
-        )
-
-        return (
-            self.model(
-                wav,
-                mask_time_indices=torch_mask_time_indices,
-                sampled_negative_indices=negative_sample_indices,
-            ),
-            torch_mask_time_indices,
-        )
