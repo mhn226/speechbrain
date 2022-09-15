@@ -6,19 +6,20 @@ Author
 """
 
 import sys
+import os
 import torch
-import fairseq
 import logging
-#import speechbrain as sb
+import speechbrain as sb
 from hyperpyyaml import load_hyperpyyaml
 from speechbrain.utils.distributed import run_on_main
 from sacremoses import MosesDetokenizer
-import fairseq
-import speechbrain as sb
 
-from torch.nn.parallel import DistributedDataParallel
+
 
 logger = logging.getLogger(__name__)
+
+sys.path.append(os.path.abspath(os.path.join('/gpfsdswork/projects/rech/nsm/ueb56uf/fairseq_samu', 'fairseq')))
+import fairseq
 
 
 # Define training procedure
@@ -31,56 +32,27 @@ class ST(sb.core.Brain):
         tokens_bos, _ = batch.tokens_bos  # translation
 
         # wav2vec module
-        feats = self.modules.wav2vec2(wavs)
+        feats = self.modules.wav2vec2(wavs)["encoder_out"].transpose(0, 1)
 
         # dimensionality reduction
         src = self.modules.enc(feats)
 
         # transformer decoder
-        #dec_out = self.modules.mBART(
-        #    src, tokens_bos, pad_idx=self.hparams.pad_index
-        #)
-
-
-        src = self.modules.adapter(src)
-        src = self.modules.length_adapter(src)
-        dec_out = self.modules.mBART(
+        dec_out = self.modules.Transformer.forward_mt_decoder_only(
             src, tokens_bos, pad_idx=self.hparams.pad_index
         )
 
         # logits and softmax
-        #pred = self.modules.seq_lin(dec_out.last_hidden_state)
-        #p_seq = self.hparams.log_softmax(pred)
-        p_seq = self.hparams.log_softmax(dec_out)
-        if hparams['mbart_frozen'] and not p_seq.requires_grad:
-            p_seq.requires_grad = True
+        pred = self.modules.seq_lin(dec_out)
+        p_seq = self.hparams.log_softmax(pred)
 
         # compute outputs
         hyps = None
         if stage == sb.Stage.VALID:
             # the output of the encoder (enc) is used for valid search
-            #hyps, _ = self.hparams.valid_search(src.detach(), wav_lens)
-            if isinstance(self.modules.mBART, DistributedDataParallel):
-                self.modules.mBART = self.modules.mBART.module
-
-            hyps = self.modules.mBART.decode(
-                    src.detach(),
-                    min_decode_ratio=hparams['min_decode_ratio'],
-                    max_decode_ratio=hparams['max_decode_ratio'],
-                    beam_size=hparams['valid_beam_size'],
-                    eos_token_id=1000000, # big number so that the decoder doesn't stop when encoutering eos
-            )
+            hyps, _ = self.hparams.valid_search(src.detach(), wav_lens)
         elif stage == sb.Stage.TEST:
-            #hyps, _ = self.hparams.test_search(src.detach(), wav_lens)
-            if isinstance(self.modules.mBART, DistributedDataParallel):
-                self.modules.mBART = self.modules.mBART.module
-            hyps = self.modules.mBART.decode(
-                    src.detach(),
-                    min_decode_ratio=hparams['min_decode_ratio'],
-                    max_decode_ratio=hparams['max_decode_ratio'],
-                    beam_size=hparams['test_beam_size'],
-                    #eos_token_id=hparams["eos_index"],
-            )
+            hyps, _ = self.hparams.test_search(src.detach(), wav_lens)
 
         return p_seq, wav_lens, hyps
 
@@ -94,15 +66,13 @@ class ST(sb.core.Brain):
         loss = self.hparams.seq_cost(p_seq, tokens_eos, length=tokens_eos_lens,)
 
         fr_detokenizer = MosesDetokenizer(lang=self.hparams.lang)
-
         if stage != sb.Stage.TRAIN:
-            #predictions = [
-            #    fr_detokenizer.detokenize(
-            #        hparams["tokenizer"].decode_ids(utt_seq).split(" ")
-            #    )
-            #    for utt_seq in hyps
-            #]
-
+            predictions = [
+                fr_detokenizer.detokenize(
+                    hparams["tokenizer"].decode_ids(utt_seq).split(" ")
+                )
+                for utt_seq in hyps
+            ]
 
             detokenized_translation = [
                 fr_detokenizer.detokenize(translation.split(" "))
@@ -110,24 +80,8 @@ class ST(sb.core.Brain):
             ]
             # it needs to be a list of list due to the extend on the bleu implementation
             targets = [detokenized_translation]
-            #predictions = [
-            #    fr_detokenizer.detokenize(
-            #        self.modules.mBART.tokenizer.batch_decode([hyp], skip_special_tokens=True)
-            #    )
-            #    for hyp in hyps
-            #]
 
-
-
-
-
-            predictions = [
-                fr_detokenizer.detokenize(hyp.split(" ")) for hyp in self.modules.mBART.tokenizer.batch_decode(hyps, skip_special_tokens=True)
-            ]
-
-            #logger.info(hyps)
             logger.info(predictions)
-            #logger.info(targets)
 
             self.bleu_metric.append(ids, predictions, targets)
 
@@ -142,11 +96,6 @@ class ST(sb.core.Brain):
             self.wav2vec_optimizer = self.hparams.wav2vec_opt_class(
                 self.modules.wav2vec2.parameters()
             )
-        # Initializes the mbart optimizer if the model is not mbart_frozen
-        if not self.hparams.mbart_frozen:
-            self.mbart_optimizer = self.hparams.mbart_opt_class(
-                self.modules.mBART.parameters()
-            )
         self.adam_optimizer = self.hparams.adam_opt_class(
             self.hparams.model.parameters()
         )
@@ -160,14 +109,10 @@ class ST(sb.core.Brain):
         if self.check_gradients(loss):
             if not self.hparams.wav2vec2_frozen:  # if wav2vec2 is not frozen
                 self.wav2vec_optimizer.step()
-            if not self.hparams.mbart_frozen:  # if mbart is not frozen
-                self.mbart_optimizer.step()
             self.adam_optimizer.step()
 
         if not self.hparams.wav2vec2_frozen:
             self.wav2vec_optimizer.zero_grad()
-        if not self.hparams.mbart_frozen:
-            self.mbart_optimizer.zero_grad()
         self.adam_optimizer.zero_grad()
 
         return loss.detach().cpu()
@@ -210,11 +155,6 @@ class ST(sb.core.Brain):
                 self.adam_optimizer, new_lr_adam
             )
 
-            stats_meta = {
-                "epoch": current_epoch,
-                "lr_adam": old_lr_adam,
-            }
-
             if not self.hparams.wav2vec2_frozen:
                 (
                     old_lr_wav2vec,
@@ -223,36 +163,21 @@ class ST(sb.core.Brain):
                 sb.nnet.schedulers.update_learning_rate(
                     self.wav2vec_optimizer, new_lr_wav2vec
                 )
-                stats_meta["lr_wav2vec"] = old_lr_wav2vec
-                #self.hparams.train_logger.log_stats(
-                #    stats_meta={
-                #        "epoch": current_epoch,
-                #        "lr_adam": old_lr_adam,
-                #        "lr_wav2vec": old_lr_wav2vec,
-                #    },
-                #    train_stats={"loss": self.train_stats},
-                #    valid_stats=stage_stats,
-                #)
-            if not self.hparams.mbart_frozen:
-                (
-                    old_lr_mbart,
-                    new_lr_mbart,
-                ) = self.hparams.lr_annealing_mbart(stage_stats["BLEU"])
-                sb.nnet.schedulers.update_learning_rate(
-                    self.mbart_optimizer, new_lr_mbart
+                self.hparams.train_logger.log_stats(
+                    stats_meta={
+                        "epoch": current_epoch,
+                        "lr_adam": old_lr_adam,
+                        "lr_wav2vec": old_lr_wav2vec,
+                    },
+                    train_stats={"loss": self.train_stats},
+                    valid_stats=stage_stats,
                 )
-                stats_meta["lr_mbart"] = old_lr_mbart
-            #else:
-            #    self.hparams.train_logger.log_stats(
-            #        stats_meta={"epoch": current_epoch, "lr_adam": old_lr_adam},
-            #        train_stats={"loss": self.train_stats},
-            #        valid_stats=stage_stats,
-            #    )
-            self.hparams.train_logger.log_stats(
-                stats_meta=stats_meta,
-                train_stats={"loss": self.train_stats},
-                valid_stats=stage_stats,
-            )
+            else:
+                self.hparams.train_logger.log_stats(
+                    stats_meta={"epoch": current_epoch, "lr_adam": old_lr_adam},
+                    train_stats={"loss": self.train_stats},
+                    valid_stats=stage_stats,
+                )
 
             # create checkpoing
             meta = {"BLEU": stage_stats["BLEU"], "epoch": current_epoch}
@@ -270,7 +195,7 @@ class ST(sb.core.Brain):
 
 
 # Define custom data procedure
-def dataio_prepare(hparams, tokenizer):
+def dataio_prepare(hparams):
     """This function prepares the datasets to be used in the brain class.
     It also defines the data processing pipeline through user-defined functions."""
 
@@ -303,18 +228,11 @@ def dataio_prepare(hparams, tokenizer):
     def reference_text_pipeline(translation):
         """Processes the transcriptions to generate proper labels"""
         yield translation
-        with tokenizer.as_target_tokenizer():
-            labels = tokenizer(translation, return_tensors="pt")
-        tokens_list = labels['input_ids'].tolist()[-1][1:-2]
-        #tokens_list = hparams["tokenizer"].encode_as_ids(translation)
-        #logger.info(tokens_list)
+        tokens_list = hparams["tokenizer"].encode_as_ids(translation)
         yield tokens_list
-        #tokens_bos = torch.LongTensor([hparams["bos_index"]] + (tokens_list))
-        tokens_bos = torch.LongTensor([tokenizer.lang_code_to_id["fr_XX"]] + (tokens_list))
-        #logger.info(tokens_bos)
+        tokens_bos = torch.LongTensor([hparams["bos_index"]] + (tokens_list))
         yield tokens_bos
         tokens_eos = torch.LongTensor(tokens_list + [hparams["eos_index"]])
-        #logger.info(tokens_eos)
         yield tokens_eos
 
     datasets = {}
@@ -340,7 +258,7 @@ def dataio_prepare(hparams, tokenizer):
             ],
         )
 
-    for dataset in ["test"]:
+    for dataset in ["valid", "test"]:
         json_path = f"{data_folder}/{dataset}.json"
         datasets[dataset] = sb.dataio.dataset.DynamicItemDataset.from_json(
             json_path=json_path,
@@ -377,9 +295,11 @@ def dataio_prepare(hparams, tokenizer):
             )
         else:
             datasets["train"] = datasets["train"].filtered_sorted(
+                #key_max_value={"duration": 30},
                 sort_key="duration"
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
+                #key_max_value={"duration": 30},
                 sort_key="duration"
             )
 
@@ -402,9 +322,11 @@ def dataio_prepare(hparams, tokenizer):
             )
         else:
             datasets["train"] = datasets["train"].filtered_sorted(
+                key_max_value={"duration": 30},
                 sort_key="duration", reverse=True
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
+                key_max_value={"duration": 30},
                 sort_key="duration", reverse=True
             )
 
@@ -462,13 +384,14 @@ if __name__ == "__main__":
     hparams["pretrainer"].load_collected(device=run_opts["device"])
 
     # We can now directly create the datasets for training, valid, and test
-    datasets = dataio_prepare(hparams, st_brain.modules.mBART.tokenizer)
+    datasets = dataio_prepare(hparams)
 
     # Before training, we drop some of the wav2vec 2.0 Transformer Encoder layers
-    st_brain.modules.wav2vec2.model.encoder.layers = st_brain.modules.wav2vec2.model.encoder.layers[
+    st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers = st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers[
         : hparams["keep_n_layers"]
     ]
 
+    #print(st_brain.modules)
 
     # Training
     st_brain.fit(
@@ -481,7 +404,6 @@ if __name__ == "__main__":
 
     # Test
     for dataset in ["valid", "test"]:
-        st_brain.hparams.wer_file = hparams["output_folder"] + "/wer_test" + ".txt"  
         st_brain.evaluate(
             datasets[dataset],
             test_loader_kwargs=hparams["test_dataloader_options"],

@@ -7,13 +7,11 @@ Author
 
 import sys
 import torch
-import fairseq
 import logging
 #import speechbrain as sb
 from hyperpyyaml import load_hyperpyyaml
 from speechbrain.utils.distributed import run_on_main
 from sacremoses import MosesDetokenizer
-import fairseq
 import speechbrain as sb
 import torchaudio
 from torch.nn.parallel import DistributedDataParallel

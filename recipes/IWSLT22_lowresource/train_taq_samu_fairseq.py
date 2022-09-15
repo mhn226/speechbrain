@@ -6,19 +6,21 @@ Author
 """
 
 import sys
+import os
 import torch
-import fairseq
 import logging
 #import speechbrain as sb
 from hyperpyyaml import load_hyperpyyaml
 from speechbrain.utils.distributed import run_on_main
 from sacremoses import MosesDetokenizer
-import fairseq
 import speechbrain as sb
-
+import torchaudio
 from torch.nn.parallel import DistributedDataParallel
 
 logger = logging.getLogger(__name__)
+
+sys.path.append(os.path.abspath(os.path.join('/gpfsdswork/projects/rech/nsm/ueb56uf/fairseq_samu', 'fairseq')))
+import fairseq
 
 
 # Define training procedure
@@ -31,8 +33,8 @@ class ST(sb.core.Brain):
         tokens_bos, _ = batch.tokens_bos  # translation
 
         # wav2vec module
-        feats = self.modules.wav2vec2(wavs)
-
+        feats = self.modules.wav2vec2(wavs)["encoder_out"].transpose(0, 1)
+        
         # dimensionality reduction
         src = self.modules.enc(feats)
 
@@ -40,8 +42,6 @@ class ST(sb.core.Brain):
         #dec_out = self.modules.mBART(
         #    src, tokens_bos, pad_idx=self.hparams.pad_index
         #)
-
-
         src = self.modules.adapter(src)
         src = self.modules.length_adapter(src)
         dec_out = self.modules.mBART(
@@ -68,7 +68,7 @@ class ST(sb.core.Brain):
                     min_decode_ratio=hparams['min_decode_ratio'],
                     max_decode_ratio=hparams['max_decode_ratio'],
                     beam_size=hparams['valid_beam_size'],
-                    eos_token_id=1000000, # big number so that the decoder doesn't stop when encoutering eos
+                    #eos_token_id=1000000, # big number so that the decoder doesn't stop when encoutering eos
             )
         elif stage == sb.Stage.TEST:
             #hyps, _ = self.hparams.test_search(src.detach(), wav_lens)
@@ -117,15 +117,15 @@ class ST(sb.core.Brain):
             #    for hyp in hyps
             #]
 
-
-
+            #logger.info(hyps)
+            #logger.info(self.modules.mBART.tokenizer.batch_decode(hyps, skip_special_tokens=True))
 
 
             predictions = [
                 fr_detokenizer.detokenize(hyp.split(" ")) for hyp in self.modules.mBART.tokenizer.batch_decode(hyps, skip_special_tokens=True)
             ]
 
-            #logger.info(hyps)
+
             logger.info(predictions)
             #logger.info(targets)
 
@@ -145,7 +145,7 @@ class ST(sb.core.Brain):
         # Initializes the mbart optimizer if the model is not mbart_frozen
         if not self.hparams.mbart_frozen:
             self.mbart_optimizer = self.hparams.mbart_opt_class(
-                self.modules.mBART.parameters()
+                    self.modules.mBART.parameters()
             )
         self.adam_optimizer = self.hparams.adam_opt_class(
             self.hparams.model.parameters()
@@ -365,13 +365,13 @@ def dataio_prepare(hparams, tokenizer):
         if hparams["debug"]:
             datasets["train"] = datasets["train"].filtered_sorted(
                 key_min_value={"duration": 1},
-                key_max_value={"duration": 5},
+                key_max_value={"duration": 3},
                 sort_key="duration",
                 reverse=True,
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
                 key_min_value={"duration": 1},
-                key_max_value={"duration": 5},
+                key_max_value={"duration": 3},
                 sort_key="duration",
                 reverse=True,
             )
@@ -390,13 +390,13 @@ def dataio_prepare(hparams, tokenizer):
         if hparams["debug"]:
             datasets["train"] = datasets["train"].filtered_sorted(
                 key_min_value={"duration": 1},
-                key_max_value={"duration": 5},
+                key_max_value={"duration": 3},
                 sort_key="duration",
                 reverse=True,
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
                 key_min_value={"duration": 1},
-                key_max_value={"duration": 5},
+                key_max_value={"duration": 3},
                 sort_key="duration",
                 reverse=True,
             )
@@ -414,12 +414,12 @@ def dataio_prepare(hparams, tokenizer):
         # use smaller dataset to debug the model
         if hparams["debug"]:
             datasets["train"] = datasets["train"].filtered_sorted(
-                key_min_value={"duration": 3},
-                key_max_value={"duration": 5},
+                key_min_value={"duration": 1},
+                key_max_value={"duration": 3},
                 sort_key="duration",
             )
             datasets["valid"] = datasets["valid"].filtered_sorted(
-                key_min_value={"duration": 1}, key_max_value={"duration": 5},
+                key_min_value={"duration": 1}, key_max_value={"duration": 3},
             )
 
         hparams["dataloader_options"]["shuffle"] = True
@@ -465,10 +465,12 @@ if __name__ == "__main__":
     datasets = dataio_prepare(hparams, st_brain.modules.mBART.tokenizer)
 
     # Before training, we drop some of the wav2vec 2.0 Transformer Encoder layers
-    st_brain.modules.wav2vec2.model.encoder.layers = st_brain.modules.wav2vec2.model.encoder.layers[
+    st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers = st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers[
         : hparams["keep_n_layers"]
     ]
 
+
+    print(st_brain.modules.mBART)
 
     # Training
     st_brain.fit(
