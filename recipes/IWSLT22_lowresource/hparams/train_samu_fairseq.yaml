@@ -29,7 +29,7 @@ target_lang: "fr_XX" # for mbart initialization
 sample_rate: 16000
 
 # Load pretrained the tokenizer
-tokenizer: !new:sentencepiece.SentencePieceProcessor
+#tokenizer: !new:sentencepiece.SentencePieceProcessor
 #pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
 #    collect_in: ./tokenizer
 #    loadables:
@@ -51,7 +51,7 @@ lr: 0.001
 lr_wav2vec: 0.00001
 lr_labse: 0.00001
 sorting: ascending
-batch_size: 4 #4
+batch_size: 1 #4
 test_batch_size: 1 #4
 loss_reduction: batchmean
 ckpt_interval_minutes: 15 # save checkpoint every N min
@@ -108,37 +108,38 @@ wav2vec2: !new:speechbrain.lobes.models.fairseq_samu.FairseqSAMU
 
 
 #linear projection
-proj: !new:speechbrain.lobes.models.VanillaNN.VanillaNN
-    input_shape: [null, null, !ref <d_model>]
-    activation: !ref <activation>
-    dnn_blocks: 1 
-    dnn_neurons: !ref <features_dim>
+#proj: !new:speechbrain.lobes.models.VanillaNN.VanillaNN
+#    input_shape: [null, null, !ref <d_model>]
+#    activation: !ref <activation>
+#    dnn_blocks: 1 
+#    dnn_neurons: !ref <features_dim>
 
 labse_path: LaBSE 
 labse_frozen: True
 LaBSE: !new:speechbrain.lobes.models.huggingface_labse.HuggingFaceLaBSE
     source: !ref <labse_path>
     freeze: !ref <labse_frozen>
+    output_norm: True
     save_path: !ref <save_folder>/labse_checkpoint
 
-attn_pooling: !new:speechbrain.lobes.models.AttentionPooling.AttentionPooling
-    input_dim: !ref <d_model>
+#attn_pooling: !new:speechbrain.lobes.models.AttentionPooling.AttentionPooling
+#    input_dim: !ref <d_model>
 
-softmax: !new:speechbrain.nnet.activations.Softmax
-    apply_log: False
+#softmax: !new:speechbrain.nnet.activations.Softmax
+#    apply_log: False
 
 
 modules:
     wav2vec2: !ref <wav2vec2>
-    attn_pooling: !ref <attn_pooling>
-    proj: !ref <proj>
+    #attn_pooling: !ref <attn_pooling>
+    #proj: !ref <proj>
     LaBSE: !ref <LaBSE>
 
-model: !new:torch.nn.ModuleList
-    - [!ref <attn_pooling>, !ref <proj>]
+#model: !new:torch.nn.ModuleList
+#    - [!ref <attn_pooling>, !ref <proj>]
 
-adam_opt_class: !name:torch.optim.Adam
-    lr: !ref <lr>
+#adam_opt_class: !name:torch.optim.Adam
+#    lr: !ref <lr>
 
 wav2vec_opt_class: !name:torch.optim.Adam
     lr: !ref <lr_wav2vec>
@@ -146,17 +147,13 @@ wav2vec_opt_class: !name:torch.optim.Adam
 labse_opt_class: !name:torch.optim.Adam
     lr: !ref <lr_labse>
 
-seq_cost: !name:speechbrain.nnet.losses.nll_loss
-    label_smoothing: !ref <label_smoothing>
-    reduction: !ref <loss_reduction>
-
 #cosine_loss: !name:torch.nn.CosineSimilarity
 
-lr_annealing_adam: !new:speechbrain.nnet.schedulers.NewBobScheduler
-    initial_value: !ref <lr>
-    improvement_threshold: 0.0025
-    annealing_factor: 0.5
-    patient: 2
+#lr_annealing_adam: !new:speechbrain.nnet.schedulers.NewBobScheduler
+#    initial_value: !ref <lr>
+#    improvement_threshold: 0.0025
+#    annealing_factor: 0.5
+#    patient: 2
 
 lr_annealing_wav2vec: !new:speechbrain.nnet.schedulers.NewBobScheduler
     initial_value: !ref <lr_wav2vec>
@@ -171,38 +168,16 @@ lr_annealing_labse: !new:speechbrain.nnet.schedulers.NewBobScheduler
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
-        model: !ref <model>
+        #model: !ref <model>
         wav2vec2: !ref <wav2vec2>
         LaBSE: !ref <LaBSE>
-        lr_annealing_adam: !ref <lr_annealing_adam>
+        #lr_annealing_adam: !ref <lr_annealing_adam>
         lr_annealing_wav2vec: !ref <lr_annealing_wav2vec>
         lr_annealing_labse: !ref <lr_annealing_labse>
         counter: !ref <epoch_counter>
 
 train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
     save_file: !ref <train_log>
-
-#valid_search: !new:speechbrain.decoders.S2STransformerBeamSearch
-#    modules: [!ref <LaBSE> null]
-#    bos_index: !ref <bos_index>
-#    eos_index: !ref <eos_index>
-#    blank_index: !ref <blank_index>
-#    min_decode_ratio: !ref <min_decode_ratio>
-#    max_decode_ratio: !ref <max_decode_ratio>
-#    beam_size: !ref <valid_beam_size>
-#    using_eos_threshold: False
-#    length_normalization: False
-
-#test_search: !new:speechbrain.decoders.S2STransformerBeamSearch
-#    modules: [!ref <LaBSE>, null]
-#    bos_index: !ref <bos_index>
-#    eos_index: !ref <eos_index>
-#    blank_index: !ref <blank_index>
-#    min_decode_ratio: !ref <min_decode_ratio>
-#    max_decode_ratio: !ref <max_decode_ratio>
-#    beam_size: !ref <test_beam_size>
-#    using_eos_threshold: True
-#    length_normalization: True
 
 bleu_computer: !name:speechbrain.utils.bleu.BLEUStats
     merge_words: False
@@ -213,11 +188,11 @@ acc_computer: !name:speechbrain.utils.Accuracy.AccuracyStats
 
 pretrainer: !new:speechbrain.utils.parameter_transfer.Pretrainer
     collect_in: !ref <save_folder>
-    loadables:
-        tokenizer: !ref <tokenizer>
+#    loadables:
+#        tokenizer: !ref <tokenizer>
 #        wav2vec2: !ref <wav2vec2>
 #        LaBSE: !ref <LaBSE>
-    paths:
-        tokenizer: !ref <tokenizer_file>
+#    paths:
+#        tokenizer: !ref <tokenizer_file>
 #        wav2vec2: !ref <wav2vec2_path>
 #        LaBSE: !ref <labse_path>

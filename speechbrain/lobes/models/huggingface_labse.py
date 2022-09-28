@@ -91,6 +91,7 @@ class HuggingFaceLaBSE(nn.Module):
         source,
         save_path,
         freeze=True,
+        output_norm=True,
     ):
         super().__init__()
 
@@ -102,8 +103,10 @@ class HuggingFaceLaBSE(nn.Module):
         self._from_pretrained(
             source, config=config, model=model, save_path=save_path
         )
+        
         self.freeze = freeze
-        #self.output_norm = output_norm
+        self.output_norm = output_norm
+        
         if self.freeze:
             logger.warning(
                 "speechbrain.lobes.models.huggingface_labse - labse is frozen."
@@ -229,7 +232,7 @@ class HuggingFaceLaBSE(nn.Module):
         input_texts (translation): list
             The list of texts (required).
         """
-        # Transform encoder's output to the right format of the LaBSE model
+        # Transform input to the right format of the LaBSE model
         if self.freeze:
             with torch.no_grad():
                 input_texts = self.tokenizer(input_texts, return_tensors="pt", padding=True)
@@ -238,10 +241,21 @@ class HuggingFaceLaBSE(nn.Module):
                     input_texts[key].requires_grad = False
                 
                 embeddings = self.model(**input_texts).pooler_output
+
+                if self.output_norm:
+                    embeddings = F.normalize(embeddings, p=2)
+
                 return embeddings
 
         input_texts = self.tokenizer(input_texts, return_tensors="pt", padding=True)
+        for key in input_texts.keys():
+            input_texts[key] = input_texts[key].cuda(device=self.model.device)
+            #input_texts[key].requires_grad = True
+            #print(input_texts[key].device, input_texts[key].requires_grad, key, input_texts[key])
         embeddings = self.model(**input_texts).pooler_output
+
+        if self.output_norm:
+            embeddings = F.normalize(embeddings, p=2)
 
         return embeddings
 

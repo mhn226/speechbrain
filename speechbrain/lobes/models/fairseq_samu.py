@@ -158,22 +158,39 @@ class FairseqSAMU(nn.Module):
         # If we freeze, we simply remove all grads and features from the graph.
         if self.freeze:
             with torch.no_grad():
-                return self.model(source=wav).detach()
+                #return self.model(source=wav).detach()
+                return self.extract_features(wav).detach()
         
-        return self.model(source=wav)
+        #return self.model(source=wav)
+        return self.extract_features(wav)
 
     def extract_features(self, wav):
         """Extracts the wav2vect embeddings"""
         # We normalize the input signal if needed.
-        if self.normalize:
-            wav = F.layer_norm(wav, wav.shape)
+        with torch.no_grad():
+            source = F.layer_norm(wav, wav.shape)
 
         # Extract wav2vec output
-        out = self.model.extract_features(wav, padding_mask=None, mask=False)[0]
+
+        # For extracting only frame-level
+        #out = self.model(source=source)["encoder_out"] #Frame-level
+
+        # For extracting frame-level + sentence-level
+        x = self.model(source=source)
+        sentence = x["encoder_out_pooled"]
+        frame =  x["encoder_out"]
+        #seq_len = frame.shape[0]
+        #pooled = torch.tile(sentence, (seq_len,1,1))
+        #out = torch.cat((pooled, frame), axis=-1)
 
         # We normalize the output if required
-        if self.output_norm:
-            out = F.layer_norm(out, out.shape)
+        #if self.output_norm:
+        #    frame = F.layer_norm(frame, frame.shape)
+        #    sentence = F.layer_norm(sentence, sentence.shape)
+
+        out = {}
+        out["frame_embeddings"] = frame
+        out["sentence_embeddings"] = sentence
 
         return out
 

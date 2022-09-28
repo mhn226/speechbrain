@@ -30,10 +30,10 @@ class ST(sb.core.Brain):
 
         batch = batch.to(self.device)
         wavs, wav_lens = batch.sig  # audio
-        tokens_bos, _ = batch.tokens_bos  # translation
+        #tokens_bos, _ = batch.tokens_bos  # translation
 
         # wav2vec module
-        uttr_embeddings = self.modules.wav2vec2(wavs)["encoder_out_pooled"]
+        uttr_embeddings = self.modules.wav2vec2(wavs)["sentence_embeddings"]
 
         # self-attention pooling
         #uttr_embeddings = self.modules.attn_pooling(feats)
@@ -52,8 +52,16 @@ class ST(sb.core.Brain):
         """Computes the loss given predictions and targets."""
         (uttr_embeddings, text_embeddings,) = predictions
 
-        loss = self.cosine_loss(uttr_embeddings, text_embeddings).abs().mean()
-        
+        #loss = self.cosine_loss(uttr_embeddings, text_embeddings).abs().mean()
+        #loss = self.cosine_loss(uttr_embeddings, text_embeddings)
+        B, S = uttr_embeddings.shape
+        loss = 0.
+        for b in range(B):
+            cosine_sim = torch.dot(uttr_embeddings[b].float(), text_embeddings[b].float())
+            loss += 1.0 - cosine_sim
+       
+        # hash code 50
+        loss *= 50
         return loss
 
     def init_optimizers(self):
@@ -67,9 +75,9 @@ class ST(sb.core.Brain):
             self.labse_optimizer = self.hparams.labse_opt_class(
                 self.modules.LaBSE.parameters()
             )
-        self.adam_optimizer = self.hparams.adam_opt_class(
-            self.hparams.model.parameters()
-        )
+        #self.adam_optimizer = self.hparams.adam_opt_class(
+        #    self.hparams.model.parameters()
+        #)
 
     def fit_batch(self, batch):
         """Train the parameters given a single batch in input"""
@@ -82,13 +90,13 @@ class ST(sb.core.Brain):
                 self.wav2vec_optimizer.step()
             if not self.hparams.labse_frozen:  # if labse is not frozen
                 self.labse_optimizer.step()
-            self.adam_optimizer.step()
+            #self.adam_optimizer.step()
 
         if not self.hparams.wav2vec2_frozen:
             self.wav2vec_optimizer.zero_grad()
         if not self.hparams.labse_frozen:
             self.labse_optimizer.zero_grad()
-        self.adam_optimizer.zero_grad()
+        #self.adam_optimizer.zero_grad()
 
         return loss.detach().cpu()
 
@@ -127,16 +135,16 @@ class ST(sb.core.Brain):
         # log stats and save checkpoint at end-of-epoch
         if stage == sb.Stage.VALID and sb.utils.distributed.if_main_process():
             current_epoch = self.hparams.epoch_counter.current
-            old_lr_adam, new_lr_adam = self.hparams.lr_annealing_adam(
-                stage_stats["loss"]
-            )
-            sb.nnet.schedulers.update_learning_rate(
-                self.adam_optimizer, new_lr_adam
-            )
+            #old_lr_adam, new_lr_adam = self.hparams.lr_annealing_adam(
+            #    stage_stats["loss"]
+            #)
+            #sb.nnet.schedulers.update_learning_rate(
+            #    self.adam_optimizer, new_lr_adam
+            #)
 
             stats_meta = {
                 "epoch": current_epoch,
-                "lr_adam": old_lr_adam,
+                #"lr_adam": old_lr_adam,
             }
 
             if not self.hparams.wav2vec2_frozen:
@@ -212,31 +220,21 @@ def dataio_prepare(hparams):
     # decoder during training, the tokens with EOS for computing the cost function.
     @sb.utils.data_pipeline.takes("trans")
     @sb.utils.data_pipeline.provides(
-        "trans", "tokens_list", "tokens_bos", "tokens_eos",
+        "trans",
+        #"trans", "tokens_list", "tokens_bos", "tokens_eos",
     )
     def reference_text_pipeline(translation):
         """Processes the transcriptions to generate proper labels"""
         yield translation
-        tokens_list = hparams["tokenizer"].encode_as_ids(translation)
-        yield tokens_list
-        tokens_bos = torch.LongTensor([hparams["bos_index"]] + (tokens_list))
-        yield tokens_bos
-        tokens_eos = torch.LongTensor(tokens_list + [hparams["eos_index"]])
-        yield tokens_eos
-
-    def get_sample_prob(dataset_lens, multilang_sampling_alpha):
-        """
-        Get smoothed sampling porbability by languages. This helps low resource
-        languages by upsampling them.
-        """
-        prob = dataset_lens / dataset_lens.sum()
-        smoothed_prob = prob ** multilang_sampling_alpha
-        smoothed_prob = smoothed_prob / smoothed_prob.sum()
-        return smoothed_prob
+        #tokens_list = hparams["tokenizer"].encode_as_ids(translation)
+        #yield tokens_list
+        #tokens_bos = torch.LongTensor([hparams["bos_index"]] + (tokens_list))
+        #yield tokens_bos
+        #tokens_eos = torch.LongTensor(tokens_list + [hparams["eos_index"]])
+        #yield tokens_eos
 
     datasets = {}
     data_folder = hparams["data_folder"]
-    dataset_lengths = []
     for dataset in ["train", "valid"]:
         json_path = f"{data_folder}/{dataset}.json"
 
@@ -252,24 +250,11 @@ def dataio_prepare(hparams):
                 "sig",
                 "duration",
                 "trans",
-                "tokens_list",
-                "tokens_bos",
-                "tokens_eos",
+                #"tokens_list",
+                #"tokens_bos",
+                #"tokens_eos",
             ],
         )
-
-        dataset_lengths.append(len(datasets[dataset]))
-
-    dataset_lengths = np.array(
-        dataset_lengths,
-        dtype=float,
-    )
-
-    sample_probs = get_sample_prob(dataset_lengths, 0.5)
-
-    size_ratio = (sample_probs * dataset_lengths.sum()) / dataset_lengths
-
-    print(dataset_lengths, sample_probs, size_ratio)
 
     for dataset in ["test"]:
         json_path = f"{data_folder}/{dataset}.json"
@@ -282,9 +267,9 @@ def dataio_prepare(hparams):
                 "sig",
                 "duration",
                 "trans",
-                "tokens_list",
-                "tokens_bos",
-                "tokens_eos",
+                #"tokens_list",
+                #"tokens_bos",
+                #"tokens_eos",
             ],
         )
 
@@ -388,7 +373,7 @@ if __name__ == "__main__":
         checkpointer=hparams["checkpointer"],
     )
  
-    st_brain.modules.attn_pooling.attn_pooling_w = st_brain.modules.attn_pooling.attn_pooling_w.to(st_brain.device)
+    #st_brain.modules.attn_pooling.attn_pooling_w = st_brain.modules.attn_pooling.attn_pooling_w.to(st_brain.device)
 
 
     #st_brain.modules.attn_pooling.device = st_brain.device
@@ -402,11 +387,11 @@ if __name__ == "__main__":
     datasets = dataio_prepare(hparams)
 
     # Before training, we drop some of the wav2vec 2.0 Transformer Encoder layers
-    st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers = st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers[
-        : hparams["keep_n_layers"]
-    ]
+    #st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers = st_brain.modules.wav2vec2.model.w2v_encoder.w2v_model.encoder.layers[
+    #    : hparams["keep_n_layers"]
+    #]
 
-    st_brain.cosine_loss = torch.nn.CosineSimilarity()
+    #st_brain.cosine_loss = torch.nn.CosineSimilarity()
 
     # Training
     st_brain.fit(
