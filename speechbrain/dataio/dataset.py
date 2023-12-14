@@ -8,12 +8,14 @@ Authors
 import copy
 import contextlib
 from types import MethodType
+import torch
 from torch.utils.data import Dataset
 from speechbrain.utils.data_pipeline import DataPipeline
 from speechbrain.dataio.dataio import load_data_json, load_data_csv
 from speechbrain.utils.data_utils import batch_shuffle
 import logging
 import math
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +423,178 @@ class DynamicItemDataset(Dataset):
         # bind this method to arrow dataset
         dataset.keys = MethodType(keys, dataset)
         return cls(dataset, dynamic_items, output_keys)
+
+
+class CombinedDynamicItemDataset(Dataset):
+    def __init__(
+        self,
+        datasets,
+        alpha=0.05,
+        dynamic_items=[],
+        output_keys=[],
+        sorting=None,
+        sort_key=None,
+        key_max_value=None,
+    ):
+        self.datasets = datasets
+        self.dynamic_items = dynamic_items
+        self.output_keys = output_keys
+        self.sorting = sorting
+        self.sort_key = sort_key
+        self.key_max_value = key_max_value
+
+        # smoothing param
+        self.alpha = alpha
+        self.ratios = self.ratios_cal()
+        self.current_epoch = None  # Track the current epoch
+
+        self.prepare_for_epoch()
+
+    def __len__(self):
+        return len(self.balanced_datasets.data_ids)
+
+    def __getitem__(self, index):
+        return self.balanced_datasets.__getitem__(index)
+
+    def ratios_cal(self):
+        """ This method calculates ratios of all datasets based on https://arxiv.org/pdf/2205.08180.pdf suggestion."""
+        total_num_examples = sum(len(dataset) for dataset in self.datasets)
+        ps = [len(dataset) / total_num_examples for dataset in self.datasets]
+        return [(p ** self.alpha) / p for p in ps]
+
+    def _balance_datasets(self):
+        """This function rebalances the datasets before each epoch."""
+        balanced_datasets = {}
+        _datasets = copy.deepcopy(self.datasets)
+        for dataset, ratio in zip(_datasets, self.ratios):
+            balanced_datasets.update(self._sampling_dataset(dataset, ratio))
+
+        self.balanced_datasets = DynamicItemDataset(
+            balanced_datasets, self.dynamic_items, self.output_keys
+        )
+        if self.sorting is not None:
+            filtered_sorted_ids = self.balanced_datasets._filtered_sorted_ids(
+                sort_key=self.sort_key,
+                # key_max_value=self.key_max_value,
+            )
+            # group_shuffle filtered_sorted_ids to avoid duplications of the same datapoints presenting in a batch.
+            filtered_sorted_ids = self.group_shuffle(
+                filtered_sorted_ids, self.balanced_datasets
+            )
+            # Create FilteredSortedDynamicItemDataset from balanced_datasets and filtered_sorted_ids
+            self.balanced_datasets = FilteredSortedDynamicItemDataset(
+                self.balanced_datasets, filtered_sorted_ids
+            )
+
+    def _sampling_dataset(self, dataset, ratio):
+        """This function samples individual dataset based on its ratio."""
+        target_length = int(len(dataset) * ratio)
+        if target_length == len(dataset):
+            return dataset
+
+        if target_length > len(dataset):
+            # Randomly dupplicating datapoints
+            indices = torch.randint(
+                len(dataset), (target_length - len(dataset),)
+            )
+            dataset = self.duplicate_entries(dataset, indices)
+            # dataset = torch.utils.data.Subset(dataset, list(range(len(dataset))) + indices.tolist())
+        else:
+            # Randomly dropping datapoints
+            indices = torch.randperm(len(dataset))[:target_length]
+            dataset = self.drop_entries(dataset, indices)
+            # dataset = torch.utils.data.Subset(dataset, indices.tolist())
+
+        return dataset
+
+    def group_shuffle(
+        self, filtered_sorted_ids, dataset, length_similarity_threshold=0.5
+    ):
+        """
+        This method does:
+        1. Grouping datapoints having relatively the same duration based on a threshold
+        2. Shuffling datapoints within each group.
+        """
+
+        # Create groups of similar lengths
+        length_groups = []
+        current_group = []
+        prev_length = None
+        for data_id in filtered_sorted_ids:
+            length = float(
+                dataset.data[data_id]["duration"]
+            )  # Replace with your actual method to get length
+            if (
+                prev_length is not None
+                and abs(length - prev_length) / prev_length
+                <= length_similarity_threshold
+            ):
+                current_group.append(data_id)
+            else:
+                if current_group:
+                    length_groups.append(current_group)
+                current_group = [data_id]
+                prev_length = length
+        if current_group:
+            length_groups.append(current_group)
+
+        # shuffle data in each group
+        shuffled_ids = []
+        for group in length_groups:
+            random.shuffle(group)
+            shuffled_ids += group
+
+        return shuffled_ids
+
+    def duplicate_entries(self, original_data, indices):
+        duplicated_data = {}
+
+        for i, index in enumerate(indices):
+            original_id, entry_data = list(original_data.items())[index]
+            new_id = f"{original_id}_{i}"
+            duplicated_data[new_id] = entry_data.copy()
+
+        return {**original_data, **duplicated_data}
+
+    def drop_entries(self, original_data, indices_to_keep):
+        filtered_data = {}
+
+        for index in indices_to_keep:
+            original_id, entry_data = list(original_data.items())[index]
+            filtered_data[original_id] = entry_data.copy()
+
+        return filtered_data
+
+    def prepare_for_epoch(self):
+        self._balance_datasets()
+        if self.current_epoch is None:
+            self.current_epoch = 0
+        else:
+            self.current_epoch += 1
+
+    @classmethod
+    def from_json(
+        cls,
+        json_paths,
+        replacements={},
+        dynamic_items=[],
+        output_keys=[],
+        sorting=None,
+        sort_key=None,
+        key_max_value=None,
+    ):
+        datasets = []
+        for json_path in json_paths:
+            dataset = load_data_json(json_path, replacements)
+            datasets.append(dataset)
+        return cls(
+            datasets=datasets,
+            dynamic_items=dynamic_items,
+            output_keys=output_keys,
+            sorting=sorting,
+            sort_key=sort_key,
+            key_max_value=key_max_value,
+        )
 
 
 class FilteredSortedDynamicItemDataset(DynamicItemDataset):

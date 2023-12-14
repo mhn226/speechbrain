@@ -333,6 +333,20 @@ class SaveableDataLoader(DataLoader):
                 self._speechbrain_recovery_skip_to = int(saved)
 
 
+class SaveableDataLoaderForCombinedDataset(SaveableDataLoader):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __iter__(self):
+        iterator = super().__iter__()
+        self._speechbrain_iterator = iterator
+        if self.dataset.current_epoch >= 1:
+            self.dataset.prepare_for_epoch()
+        else:
+            self.dataset.current_epoch += 1
+        return iterator
+
+
 @register_checkpoint_hooks
 class LoopedLoader:
     """Loops an underlying iterable indefinitely, with nominal epoch lengths
