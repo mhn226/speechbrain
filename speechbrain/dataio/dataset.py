@@ -596,6 +596,30 @@ class CombinedDynamicItemDataset(Dataset):
             key_max_value=key_max_value,
         )
 
+    @classmethod
+    def from_csv(
+        cls,
+        csv_paths,
+        replacements={},
+        dynamic_items=[],
+        output_keys=[],
+        sorting=None,
+        sort_key=None,
+        key_max_value=None,
+    ):
+        datasets = []
+        for csv_path in csv_paths:
+            dataset = load_data_csv(csv_path, replacements)
+            datasets.append(dataset)
+        return cls(
+            datasets=datasets,
+            dynamic_items=dynamic_items,
+            output_keys=output_keys,
+            sorting=sorting,
+            sort_key=sort_key,
+            key_max_value=key_max_value,
+        )
+
 
 class FilteredSortedDynamicItemDataset(DynamicItemDataset):
     """Possibly filtered, possibly sorted DynamicItemDataset.
