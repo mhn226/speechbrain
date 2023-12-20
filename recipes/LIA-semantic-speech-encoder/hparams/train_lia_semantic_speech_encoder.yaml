@@ -17,11 +17,11 @@ wer_file: !ref <output_folder>/wer.txt
 # root data folder points to 17h version inside the github folder (IWSLT2022_Tamasheq_data/taq_fra_clean/)
 root_data_folder: !PLACEHOLDER # e.g., /users/hnguyen/IWSLT2022_Tamasheq_data/taq_fra_clean
 # data folder is the place where the json files will be stored prior to training
-data_folder: !ref <root_data_folder>/json_version/
+data_folder: !ref <root_data_folder>/csv_version/
 # Data files
-train_set: [!ref <data_folder>/valid.json, !ref <data_folder>/test.json] #!ref <data_folder>/train.json
-valid_set: !ref <data_folder>/valid.json
-test_set: !ref <data_folder>/test.json
+train_set: [!ref <data_folder>/train.csv]
+valid_set: !ref <data_folder>/valid.csv
+test_set: !ref <data_folder>/test.csv
 skip_prep: False
 
 # URL for the HuggingFace model we want to load (BASE here)

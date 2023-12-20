@@ -13,6 +13,8 @@ import speechbrain as sb
 import torch.nn.functional as F
 from speechbrain.utils.distributed import run_on_main
 
+import os
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,8 +35,8 @@ class ST(sb.core.Brain):
         # norm
         uttr_embeddings = F.normalize(uttr_embeddings, p=2)
 
-        # LaBSE
-        text_embeddings = self.modules.LaBSE(batch.trans)
+        # text_embeddings = self.modules.LaBSE(batch.trans)
+        text_embeddings, text_embeddings_lens = batch.text_embedding
 
         return uttr_embeddings, text_embeddings
 
@@ -209,17 +211,24 @@ class ST(sb.core.Brain):
 def dataio_prepare(hparams):
     """This function prepares the datasets to be used in the brain class.
     It also defines the data processing pipeline through user-defined functions."""
+    # LaBSE embeddings are pre-computed in the FOLDER associated to the dataset
+    from kaldiio import load_scp
+
+    embeddings_file = os.path.join(
+        hparams["data_folder"], "labse_embeddings.scp"
+    )
+    reader = load_scp(embeddings_file)
 
     # Define audio pipeline. In this case, we simply read the path contained
     # in the variable wav with the audio reader.
-    @sb.utils.data_pipeline.takes("path")
+    @sb.utils.data_pipeline.takes("wav")
     @sb.utils.data_pipeline.provides("sig")
     def audio_pipeline(wav):
         """Load the audio signal. This is done on the CPU in the `collate_fn`."""
         sig = sb.dataio.dataio.read_audio(wav)
         return sig
 
-    @sb.utils.data_pipeline.takes("path")
+    @sb.utils.data_pipeline.takes("wav")
     @sb.utils.data_pipeline.provides("sig")
     def sp_audio_pipeline(wav):
         """Load the audio signal. This is done on the CPU in the `collate_fn`."""
@@ -229,38 +238,45 @@ def dataio_prepare(hparams):
         sig = sig.squeeze(0)
         return sig
 
-    # 3. Define text pipeline:
-    @sb.utils.data_pipeline.takes("trans")
-    @sb.utils.data_pipeline.provides("trans")
-    def reference_text_pipeline(wrd):
-        yield wrd
+    # # 3. Define text pipeline:
+    # @sb.utils.data_pipeline.takes("trans")
+    # @sb.utils.data_pipeline.provides("trans")
+    # def reference_text_pipeline(wrd):
+    #     yield wrd
+
+    # 3.bis Define text embeddings pipeline
+    @sb.utils.data_pipeline.takes("id")
+    @sb.utils.data_pipeline.provides("text_embedding")
+    def text_embedding_pipeline(id):
+        text_embedding = reader.get(id)
+        yield torch.tensor(text_embedding)
 
     datasets = {}
     data_folder = hparams["data_folder"]
     for dataset in ["train"]:
-        json_paths = hparams[f"{dataset}_set"]
+        csv_paths = hparams[f"{dataset}_set"]
 
         is_use_sp = dataset == "train" and "speed_perturb" in hparams
         audio_pipeline_func = sp_audio_pipeline if is_use_sp else audio_pipeline
 
         datasets[
             dataset
-        ] = sb.dataio.dataset.CombinedDynamicItemDataset.from_json(
-            json_paths=json_paths,
+        ] = sb.dataio.dataset.CombinedDynamicItemDataset.from_csv(
+            csv_paths=csv_paths,
             replacements={"data_root": data_folder},
-            dynamic_items=[audio_pipeline_func, reference_text_pipeline],
-            output_keys=["id", "sig", "duration", "trans"],
+            dynamic_items=[audio_pipeline_func, text_embedding_pipeline],
+            output_keys=["id", "sig", "duration", "text_embedding"],
             sorting="ascending",
             sort_key="duration",
         )
 
     for dataset in ["valid", "test"]:
-        json_path = hparams[f"{dataset}_set"]
-        datasets[dataset] = sb.dataio.dataset.DynamicItemDataset.from_json(
-            json_path=json_path,
+        csv_path = hparams[f"{dataset}_set"]
+        datasets[dataset] = sb.dataio.dataset.DynamicItemDataset.from_csv(
+            csv_path=csv_path,
             replacements={"data_root": data_folder},
-            dynamic_items=[audio_pipeline, reference_text_pipeline],
-            output_keys=["id", "sig", "duration", "trans"],
+            dynamic_items=[audio_pipeline, text_embedding_pipeline],
+            output_keys=["id", "sig", "duration", "text_embedding"],
         )
 
     """ Deal with this later
@@ -369,7 +385,7 @@ if __name__ == "__main__":
 
     if not hparams["skip_prep"]:
         run_on_main(
-            prepare_iwslt22.data_proc,
+            prepare_iwslt22.data_proc_csv,
             kwargs={
                 "dataset_folder": hparams["root_data_folder"],
                 "output_folder": hparams["data_folder"],

@@ -9,6 +9,7 @@ Marcely Zanon Boito 2022
 
 import json
 import os
+import csv
 
 
 def write_json(json_file_name, data):
@@ -72,3 +73,44 @@ def data_proc(dataset_folder, output_folder):
         output_json = generate_json(split_folder, split)
 
         write_json(output_folder + "/" + split + ".json", output_json)
+
+
+def data_proc_csv(dataset_folder, output_folder):
+    """
+    Same as data_proc but for csv
+    """
+    try:
+        os.mkdir(output_folder)
+    except OSError:
+        print(
+            "Tried to create " + output_folder + ", but folder already exists."
+        )
+
+    for split in ["train", "valid", "test"]:
+        split_folder = "/".join([dataset_folder, split, "txt"])
+
+        output_json = generate_json(split_folder, split)
+        # 'clean_JOURNAL_TAMASHEQ-2017-01-13_id_31': {'path': 'X', 'trans': "Y", 'duration': 'Z'}
+        csv_lines = [["ID", "duration", "wav", "trans"]]
+        for element_id, element_data in output_json.items():
+            csv_lines.append(
+                [
+                    element_id,
+                    element_data["duration"],
+                    element_data["path"],
+                    element_data["trans"].strip(),
+                ]
+            )
+
+        # Writing the csv_lines
+        with open(
+            output_folder + "/" + split + ".csv", mode="w", encoding="utf-8"
+        ) as csv_f:
+            csv_writer = csv.writer(
+                csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+            )
+
+            for line in csv_lines:
+                csv_writer.writerow(line)
+
+        # write_json(output_folder + "/" + split + ".json", output_json)
